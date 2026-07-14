@@ -6,14 +6,19 @@ import os
 import sys
 import time
 import torch
-from torch.autograd import Variable
 import torch.nn as nn
 import torch.optim as optim
 import torch.backends.cudnn as cudnn
 import torch.nn.init as init
 import torch.utils.data as data
-import numpy as np
 import argparse
+
+from pathlib import Path
+import pandas as pd
+from tqdm import tqdm
+import shutil
+
+from eval import evaluate_model
 
 
 def str2bool(v):
@@ -33,8 +38,10 @@ parser.add_argument('--batch_size', default=32, type=int,
                     help='Batch size for training')
 parser.add_argument('--resume', default=None, type=str,
                     help='Checkpoint state_dict file to resume training from')
-parser.add_argument('--start_iter', default=0, type=int,
-                    help='Resume training at this iter')
+# parser.add_argument('--start_iter', default=0, type=int,
+#                     help='Resume training at this iter')
+parser.add_argument("--epochs", default=100, type=int,
+                    help="Number of training epochs")
 parser.add_argument('--num_workers', default=4, type=int,
                     help='Number of workers used in dataloading')
 parser.add_argument('--cuda', default=True, type=str2bool,
@@ -51,8 +58,22 @@ parser.add_argument('--visdom', default=False, type=str2bool,
                     help='Use visdom for loss visualization')
 parser.add_argument('--save_folder', default='weights/',
                     help='Directory for saving checkpoint models')
+
+parser.add_argument("--split-file", default=None, type=str, 
+                    help="Path to training split file")
+parser.add_argument("--save-dir", default="checkpoints", type=str,
+                    help="Directory to save checkpoints and logs")
+parser.add_argument("--experiment-name", default=None, type=str)
+parser.add_argument("--save-freq", type=int, default=9999, 
+                    help="Save checkpoint every N epochs")
+
 args = parser.parse_args()
 
+device = torch.device(
+    "cuda" if torch.cuda.is_available() and args.cuda else "cpu"
+)
+
+print("Using device:", device)
 
 if torch.cuda.is_available():
     if args.cuda:
@@ -64,8 +85,12 @@ if torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
-if not os.path.exists(args.save_folder):
-    os.mkdir(args.save_folder)
+# if not os.path.exists(args.save_folder):
+#     os.mkdir(args.save_folder)
+save_dir = Path(args.save_dir)
+weights_dir = save_dir
+
+weights_dir.mkdir(parents=True, exist_ok=True)
 
 
 def train():
@@ -85,30 +110,40 @@ def train():
             parser.error('Must specify dataset if specifying dataset_root')
         cfg = voc
         dataset = VOCDetection(root=args.dataset_root,
+                               split_file=args.split_file,
                                transform=SSDAugmentation(cfg['min_dim'],
                                                          MEANS))
+        
+    train_loader = data.DataLoader(dataset, args.batch_size,
+                                num_workers=args.num_workers,
+                                shuffle=True,
+                                collate_fn=detection_collate, drop_last=False,
+                                persistent_workers=args.num_workers > 0,
+                                pin_memory=True, generator=torch.Generator(device=device))
 
     if args.visdom:
         import visdom
         viz = visdom.Visdom()
 
     ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'])
-    net = ssd_net
+
+    if args.resume:
+        print('Resuming training, loading {}...'.format(args.resume))
+        ckpt = torch.load(args.resume, map_location=device)
+        ssd_net.load_state_dict(ckpt["model"])
+    else:
+        # vgg_weights = torch.load(args.save_folder + args.basenet)
+        vgg_weights = torch.load(Path(args.save_folder) / args.basenet, map_location="cpu")
+        print('Loading base network...')
+        ssd_net.vgg.load_state_dict(vgg_weights)
+
+    net = ssd_net.to(device)
 
     if args.cuda:
         net = torch.nn.DataParallel(ssd_net)
         cudnn.benchmark = True
-
-    if args.resume:
-        print('Resuming training, loading {}...'.format(args.resume))
-        ssd_net.load_weights(args.resume)
-    else:
-        vgg_weights = torch.load(args.save_folder + args.basenet)
-        print('Loading base network...')
-        ssd_net.vgg.load_state_dict(vgg_weights)
-
-    if args.cuda:
-        net = net.cuda()
+    
+    net = ssd_net
 
     if not args.resume:
         print('Initializing weights...')
@@ -119,105 +154,219 @@ def train():
 
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.weight_decay)
+
+    start_epoch = 0
+
+    if args.resume:
+        optimizer.load_state_dict(ckpt["optimizer"])
+        start_epoch = ckpt["epoch"] + 1
+
     criterion = MultiBoxLoss(cfg['num_classes'], 0.5, True, 0, True, 3, 0.5,
                              False, args.cuda)
+    
+    print("=" * 60)
+    print("Dataset       :", dataset.name)
+    print("Training imgs :", len(dataset))
+    print("Epochs        :", args.epochs)
+    print("Batch size    :", args.batch_size)
+    print("Learning rate :", args.lr)
+    print("Save dir      :", save_dir)
 
-    net.train()
-    # loss counters
-    loc_loss = 0
-    conf_loss = 0
-    epoch = 0
-    print('Loading the dataset...')
+    # print("=" * 60)
+    # net.train()
+    # # loss counters
+    # loc_loss = 0
+    # conf_loss = 0
+    # epoch = 0
+    # print('Loading the dataset...')
 
-    epoch_size = len(dataset) // args.batch_size
-    print('Training SSD on:', dataset.name)
-    print('Using the specified args:')
-    print(args)
+    # epoch_size = len(dataset) // args.batch_size
+    # print('Training SSD on:', dataset.name)
+    # print('Using the specified args:')
+    # print(args)
 
-    step_index = 0
+    # step_index = 0
+    print("\nStarting training...\n")
+    best_mAP = 0.0
+    for epoch in range(start_epoch, args.epochs):
+        net.train()
 
-    if args.visdom:
-        vis_title = 'SSD.PyTorch on ' + dataset.name
-        vis_legend = ['Loc Loss', 'Conf Loss', 'Total Loss']
-        iter_plot = create_vis_plot('Iteration', 'Loss', vis_title, vis_legend)
-        epoch_plot = create_vis_plot('Epoch', 'Loss', vis_title, vis_legend)
+        lr = adjust_learning_rate(optimizer, epoch + 1)
 
-    data_loader = data.DataLoader(dataset, args.batch_size,
-                                  num_workers=args.num_workers,
-                                  shuffle=True, collate_fn=detection_collate,
-                                  pin_memory=True)
-    # create batch iterator
-    batch_iterator = iter(data_loader)
-    for iteration in range(args.start_iter, cfg['max_iter']):
-        if args.visdom and iteration != 0 and (iteration % epoch_size == 0):
-            update_vis_plot(epoch, loc_loss, conf_loss, epoch_plot, None,
-                            'append', epoch_size)
-            # reset epoch loss counters
-            loc_loss = 0
-            conf_loss = 0
-            epoch += 1
-
-        if iteration in cfg['lr_steps']:
-            step_index += 1
-            adjust_learning_rate(optimizer, args.gamma, step_index)
-
-        # load train data
-        images, targets = next(batch_iterator)
-
-        if args.cuda:
-            images = Variable(images.cuda())
-            targets = [Variable(ann.cuda(), volatile=True) for ann in targets]
-        else:
-            images = Variable(images)
-            targets = [Variable(ann, volatile=True) for ann in targets]
-        # forward
-        t0 = time.time()
-        out = net(images)
-        # backprop
-        optimizer.zero_grad()
-        loss_l, loss_c = criterion(out, targets)
-        loss = loss_l + loss_c
-        loss.backward()
-        optimizer.step()
-        t1 = time.time()
-        loc_loss += loss_l.data[0]
-        conf_loss += loss_c.data[0]
-
-        if iteration % 10 == 0:
-            print('timer: %.4f sec.' % (t1 - t0))
-            print('iter ' + repr(iteration) + ' || Loss: %.4f ||' % (loss.data[0]), end=' ')
+        epoch_loc_loss = 0.0
+        epoch_conf_loss = 0.0
+        epoch_total_loss = 0.0
 
         if args.visdom:
-            update_vis_plot(iteration, loss_l.data[0], loss_c.data[0],
-                            iter_plot, epoch_plot, 'append')
+            vis_title = 'SSD.PyTorch on ' + dataset.name
+            vis_legend = ['Loc Loss', 'Conf Loss', 'Total Loss']
+            iter_plot = create_vis_plot('Iteration', 'Loss', vis_title, vis_legend)
+            epoch_plot = create_vis_plot('Epoch', 'Loss', vis_title, vis_legend)
 
-        if iteration != 0 and iteration % 5000 == 0:
-            print('Saving state, iter:', iteration)
-            torch.save(ssd_net.state_dict(), 'weights/ssd300_COCO_' +
-                       repr(iteration) + '.pth')
-    torch.save(ssd_net.state_dict(),
-               args.save_folder + '' + args.dataset + '.pth')
+        pbar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{args.epochs}]", leave=True)
+        for images, targets in pbar:
+            images = images.to(device, non_blocking=True)
+            targets = [ann.to(device, non_blocking=True) for ann in targets]
+
+            # forward
+            out = net(images)
+            # backprop
+            optimizer.zero_grad()
+            loss_l, loss_c = criterion(out, targets)
+            loss = loss_l + loss_c
+            loss.backward()
+            optimizer.step()
+            epoch_loc_loss += loss_l.item()
+            epoch_conf_loss += loss_c.item()
+            epoch_total_loss += loss.item()
+
+            pbar.set_postfix(
+                loss=f"{loss.item():.3f}",
+                loc=f"{loss_l.item():.3f}",
+                conf=f"{loss_c.item():.3f}",
+                lr=f"{optimizer.param_groups[0]['lr']:.1e}"
+            )
+        
+        num_batches = len(train_loader)
+        epoch_loc_loss /= num_batches
+        epoch_conf_loss /= num_batches
+        epoch_total_loss /= num_batches
+
+        print()
+        print(
+            f"Epoch {epoch+1:03d} | "
+            f"Loc {epoch_loc_loss:.4f} | "
+            f"Conf {epoch_conf_loss:.4f} | "
+            f"Total {epoch_total_loss:.4f}"
+        )
+        mAP = None
+        aps = None
+        is_best = False
+
+        if (epoch + 1) % 1 == 0:
+            metrics = evaluate_model(
+                net=net,
+                dataset_root=args.dataset_root,
+                device=device,
+                save_dir=os.path.join(args.save_dir, "eval")
+            )
+
+            mAP = metrics["mAP"]
+            aps = metrics["aps"]
+
+            is_best = mAP > best_mAP
+            if is_best:
+                best_mAP = mAP
+        
+
+        log_epoch(
+            epoch=epoch + 1, lr=lr, 
+            loc_loss=epoch_loc_loss, conf_loss=epoch_conf_loss,
+            mAP=mAP, aps=aps or {}
+        )
+
+        save_checkpoint(
+            model=net, optimizer=optimizer, 
+            epoch=epoch, best=is_best, best_mAP=best_mAP, 
+            save_dir=weights_dir
+        )
+
+    save_checkpoint(
+        model=net,
+        optimizer=optimizer,
+        epoch=args.epochs,
+        best=False,
+        best_mAP=best_mAP,
+        save_dir=weights_dir,
+        filename="checkpoint_last.pth",
+    )
 
 
-def adjust_learning_rate(optimizer, gamma, step):
-    """Sets the learning rate to the initial LR decayed by 10 at every
-        specified step
-    # Adapted from PyTorch Imagenet example:
-    # https://github.com/pytorch/examples/blob/master/imagenet/main.py
+# def adjust_learning_rate(optimizer, gamma, step):
+#     """Sets the learning rate to the initial LR decayed by 10 at every
+#         specified step
+#     # Adapted from PyTorch Imagenet example:
+#     # https://github.com/pytorch/examples/blob/master/imagenet/main.py
+#     """
+#     lr = args.lr * (gamma ** (step))
+#     for param_group in optimizer.param_groups:
+#         param_group['lr'] = lr
+
+def adjust_learning_rate(optmizer, epoch):
     """
-    lr = args.lr * (gamma ** (step))
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+    Epoch-based step learning rate schedule.
+
+    Epochs:
+        1 - 239 : 1e-3
+        240-300 : 1e-4
+    """
+    lr = args.lr
+
+    if epoch >= 240:
+        lr *= 0.1
+
+    for param_group in optmizer.param_groups:
+        param_group["lr"] = lr
+
+    return lr
+
+history = []
+def log_epoch(epoch, lr, loc_loss, conf_loss, aps, mAP):
+    history.append({
+        "epoch": epoch,
+        "lr": lr,
+        "loc_loss": loc_loss,
+        "conf_loss": conf_loss,
+        "total_loss": loc_loss + conf_loss,
+        "mAP": mAP,
+        **aps
+    })
+
+    pd.DataFrame(history).to_csv(save_dir / "epoch_history.csv", index=False)
+
+def save_checkpoint(model, optimizer, epoch, save_dir, 
+                    best=False, best_mAP=None, filename="checkpoint_latest.pth"):
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Handle DataParallel
+    state_dict = (
+        model.module.state_dict()
+        if hasattr(model, "module")
+        else model.state_dict()
+    )
+
+    state = {
+        "epoch": epoch,
+        "model": state_dict,
+        "optimizer": optimizer.state_dict(),
+        "best_mAP": best_mAP,
+    }
+
+    latest_ckpt = save_dir / filename
+    torch.save(state, latest_ckpt)
+
+    if best:
+        shutil.copy2(latest_ckpt, save_dir / "checkpoint_best.pth")
+
+    # Periodic checkpoints
+    if epoch % args.save_freq == 0:
+        shutil.copy2(
+            latest_ckpt,
+            save_dir / f"checkpoint_epoch_{epoch:03d}.pth",
+        )
 
 
 def xavier(param):
-    init.xavier_uniform(param)
+    init.xavier_uniform_(param)
 
 
 def weights_init(m):
     if isinstance(m, nn.Conv2d):
-        xavier(m.weight.data)
-        m.bias.data.zero_()
+        xavier(m.weight)
+
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
 
 
 def create_vis_plot(_xlabel, _ylabel, _title, _legend):

@@ -84,7 +84,13 @@ class COCODetection(data.Dataset):
     """
 
     def __init__(self, root, image_set='trainval35k', transform=None,
-                 target_transform=COCOAnnotationTransform(), dataset_name='MS COCO'):
+                 target_transform=None, dataset_name='MS COCO'):
+        
+        if target_transform is None:
+            self.target_transform = COCOAnnotationTransform()
+        else:
+            self.target_transform = target_transform
+        
         sys.path.append(osp.join(root, COCO_API))
         from pycocotools.coco import COCO
         self.root = osp.join(root, IMAGES, image_set)
