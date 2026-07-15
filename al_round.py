@@ -89,6 +89,7 @@ def main():
             current_round,
         ),
         args=args,
+        
     )
 
     # ----------------------------------------------------------
@@ -124,8 +125,7 @@ def main():
             args.method,
             current_round,
         ) / "labeled",
-        split_file=train_file,
-        num_classes=20,
+        split_file=train_file
     )
 
     unlabeled_features, _ = load_features(
@@ -133,8 +133,7 @@ def main():
             args.method,
             current_round,
         ) / "unlabeled",
-        split_file=unlabeled_file,
-        num_classes=20,
+        split_file=unlabeled_file
     )
 
     # ----------------------------------------------------------

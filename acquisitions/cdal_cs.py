@@ -2,7 +2,7 @@ import os
 import numpy as np
 from dataclasses import dataclass
 
-def load_features(feature_dir, split_file, num_classes=20):
+def load_features(feature_dir, split_file):
     image_ids = []
     features = []
 
@@ -17,7 +17,7 @@ def load_features(feature_dir, split_file, num_classes=20):
     return np.stack(features), image_ids
 
 
-def _kl_distance_matrix(A, B, num_classes=19, chunk_size=25, eps=1e-10):
+def _kl_distance_matrix(A, B, num_classes, chunk_size=64, eps=1e-10):
     """
     A: [N, C*C], B: [M, C*C]
     returns: [N, M] fully vectorized symmetric KL distance matrix
@@ -25,55 +25,60 @@ def _kl_distance_matrix(A, B, num_classes=19, chunk_size=25, eps=1e-10):
     """
     N = len(A)
     M = len(B)
-    Ar = A.reshape(N, num_classes, num_classes).astype(np.float64)  # [N, C, C]
-    Br = B.reshape(M, num_classes, num_classes).astype(np.float64)  # [M, C, C]
-    D  = np.zeros((N, M), dtype=np.float32)
 
-    for i in range(0, N, chunk_size):
-        pa = Ar[i:i+chunk_size, None, :, :]   # [chunk, 1,  C, C]
-        pb = Br[None, :, :, :]                 # [1,     M,  C, C]
+    A = np.asarray(A, dtype=np.float32)
+    B = np.asarray(B, dtype=np.float32)
+                   
+    Ar = A.reshape(N, num_classes, num_classes) # [N, C, C]
+    Br = B.reshape(M, num_classes, num_classes) # [M, C, C]
+    D  = np.empty((N, M), dtype=np.float32)
+
+    for start in range(0, N, chunk_size):
+        stop = min(start + chunk_size, N)
+
+        pa = Ar[start:stop, None]      # [chunk,1,C,C]
+        pb = Br[None]                  # [1,M,C,C]
 
         with np.errstate(divide='ignore', invalid='ignore'):
-            # per-class symmetric KL: [chunk, M, C]
-            kl = (-0.5 * pa * np.log(pa / (pb + eps))
-                  -0.5 * pb * np.log(pb / (pa + eps))).sum(axis=-1)
-
+            log_pa_pb = np.log(pa / pb)
+            log_pb_pa = np.log(pb / pa)
+            
+            # per-class symmetric KL: [chunk, M, C]        
+            kl = (-0.5 * pa * log_pa_pb - 0.5 * pb * log_pb_pa).sum(axis=-1)
+        
         # drop NaN/Inf rows exactly like the original, then average
         kl = np.where(np.isfinite(kl), kl, np.nan)          # [chunk, M, C]
         with np.errstate(all='ignore'):
             kl_mean = np.nanmean(kl, axis=-1)                # [chunk, M]
         kl_mean = np.where(np.isnan(kl_mean), 0.0, kl_mean) # all-NaN → 0
 
-        D[i:i+chunk_size] = np.abs(kl_mean).astype(np.float32)
+        D[start:stop] = np.abs(kl_mean).astype(np.float32)
 
     return D
 
 
 def cdal_coreset_select(unlabeled_features, labeled_features,
-                        budget, num_classes=19, seed=None):
+                        budget, num_classes, seed=None):
     """
     Precomputes ALL pairwise distances upfront — greedy loop is then O(N) lookups.
     """
     rng = np.random.RandomState(seed) if seed is not None else np.random
 
-    N_u = len(unlabeled_features)
     unlabeled_features = np.asarray(unlabeled_features, dtype=np.float32)
     labeled_features   = np.asarray(labeled_features,   dtype=np.float32)
 
-    print("Precomputing unlabeled→labeled distances...")
+    N_u = len(unlabeled_features)
+
+    print("Computing distances to labeled...")
     dist_ul = _kl_distance_matrix(
         unlabeled_features, labeled_features, num_classes=num_classes
     )   # [N_u, N_l]
-    min_dist = dist_ul.min(axis=1)   # [N_u]
 
-    print("Precomputing unlabeled→unlabeled distances...")
-    dist_uu = _kl_distance_matrix(
-        unlabeled_features, unlabeled_features, num_classes=num_classes
-    )   # [N_u, N_u]
+    min_dist = dist_ul.min(axis=1)   # [N_u]
 
     selected = []
 
-    for idx in range(budget):
+    for idx in range(min(budget, N_u)):
         if idx == 0:
             chosen = int(rng.choice(N_u))          # random first pick, matches original
         else:
@@ -82,11 +87,18 @@ def cdal_coreset_select(unlabeled_features, labeled_features,
         selected.append(chosen)
         min_dist[chosen] = -np.inf                 # mark as selected
 
-        # O(N) lookup from precomputed matrix — no recomputation
-        still_active = min_dist >= 0
-        min_dist[still_active] = np.minimum(
-            min_dist[still_active],
-            dist_uu[chosen, still_active]
+        # Compute only ONE column (N_u × 1)
+        dist_new = _kl_distance_matrix(
+            unlabeled_features,
+            unlabeled_features[chosen:chosen + 1],
+            num_classes=num_classes,
+        ).ravel()
+
+        active = min_dist >= 0
+        
+        min_dist[active] = np.minimum(
+            min_dist[active],
+            dist_new[active],
         )
 
     return selected

@@ -152,14 +152,12 @@ def main():
     print("\nRunning CDAL acquisition...\n")
     labeled_features, _ = load_features(
         feature_dir=experiment.get_inference_dir("initial", 0) / "labeled",
-        split_file=train_file,
-        num_classes=20,
+        split_file=train_file
     )
 
     unlabeled_features, _ = load_features(
         feature_dir=experiment.get_inference_dir("initial", 0) / "unlabeled",
-        split_file=unlabeled_file,
-        num_classes=20,
+        split_file=unlabeled_file
     )
 
     cdal_indices = cdal_coreset_select(
@@ -171,7 +169,7 @@ def main():
     )
 
     experiment.create_method_round("cdal", 1)
-    
+
     update_splits(
         selected_indices=cdal_indices,
         unlabeled_records=unlabeled,

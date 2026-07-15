@@ -65,7 +65,7 @@ def train_model(train_file, weight_dir, args):
     return checkpoint
 
 
-def evaluate_round(checkpoint, dataset_root, evaluation_dir, device, method, round_no, num_labeled):
+def evaluate_round(checkpoint, dataset_root, evaluation_dir, device):
     """
     Evaluate checkpoint_best.pth on VOC2007 test.
     """
@@ -114,7 +114,7 @@ def save_round_metrics(metrics, evaluation_dir):
     print(f"\nMetrics saved to {metrics_file}")
 
 
-def run_training_pipeline(train_file, unlabeled_file, weight_dir, evaluation_dir, inference_dir, history_csv, args, method, round_no):
+def run_training_pipeline(train_file, unlabeled_file, weight_dir, evaluation_dir, inference_dir, args):
 
     device = torch.device(
         "cuda"
@@ -124,7 +124,6 @@ def run_training_pipeline(train_file, unlabeled_file, weight_dir, evaluation_dir
 
     print("\n")
     print("=" * 70)
-    print(f"Training {method.upper()} Round-{round_no:02d}")
     print("=" * 70)
 
     # -------------------------------------------------------------
@@ -141,16 +140,11 @@ def run_training_pipeline(train_file, unlabeled_file, weight_dir, evaluation_dir
     # Evaluate
     # -------------------------------------------------------------
 
-    num_labeled = sum(1 for _ in open(train_file))
-
     metrics = evaluate_round(
         checkpoint=checkpoint,
         dataset_root=args.dataset_root,
         evaluation_dir=evaluation_dir,
-        device=device,
-        method=method,
-        round_no=round_no,
-        num_labeled=num_labeled,
+        device=device
     )
 
     print("\n")
@@ -200,7 +194,6 @@ def run_training_pipeline(train_file, unlabeled_file, weight_dir, evaluation_dir
 
     print("\n")
     print("=" * 70)
-    print(f"Finished {method.upper()} Round-{round_no:02d}")
     print("=" * 70)
 
     return checkpoint, metrics
