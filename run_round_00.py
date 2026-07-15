@@ -15,7 +15,6 @@ Pipeline
 
 import argparse
 from pathlib import Path
-import subprocess
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -23,9 +22,14 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utils.experiment import ExperimentManager
 from utils.split_manager import SplitManager
 from utils.dataset import collect_trainval
+from utils.pipeline import run_training_pipeline
 
 from acquisitions.random import random_select
-from acquisitions.cdal_cs import (load_features, cdal_coreset_select, update_splits)
+from acquisitions.cdal_cs import (
+    load_features, 
+    cdal_coreset_select, 
+    update_splits
+)
 
 
 def str2bool(v):
@@ -48,11 +52,13 @@ def parse_args():
     parser.add_argument("--dataset_root", type=str, default="datasets/PASCAL_VOC/VOCdevkit")
     parser.add_argument("--initial-budget", type=int, default=1000)
     parser.add_argument("--acquisition-budget", type=int, default=1000)
-    parser.add_argument("--save-freq", type=int, default=20, 
+    parser.add_argument("--save-freq", type=int, default=9999, 
                     help="Save checkpoint every N epochs")
     parser.add_argument('--cuda', default=True, type=str2bool,
                     help='Use CUDA to train model')
     parser.add_argument("--experiment-name", required=True)
+    parser.add_argument('--resume', default=None, type=str,
+                    help='Checkpoint state_dict file to resume training from')
 
     return parser.parse_args()
 
@@ -63,8 +69,6 @@ def main():
 
     experiment.create_experiment()
     experiment.create_initial_round()
-
-    round_dir = experiment.get_round_dir("initial", 0)
 
     # Initial random split
     print("=" * 60)
@@ -90,52 +94,40 @@ def main():
     print(experiment.exp_dir)
 
 
-    # Train SSD
-    print("\nTraining Round 00...\n")
-    train_cmd = [
-        "python", "train.py",
-        "--dataset", "VOC",
-        "--dataset_root", args.dataset_root,
-        "--split-file", str(train_file),
-        "--epochs", str(args.epochs),
-        "--batch_size", str(args.batch_size),
-        "--num_workers", str(args.num_workers),
-        "--experiment-name", args.experiment_name,
-        "--save-dir", str(experiment.get_weight_dir("initial", 0)),
-        "--save-freq", str(args.save_freq),
-        "--lr", str(args.lr)
-    ]
+    # ----------------------------------------------------------
+    # Train + Evaluate + Feature Extraction
+    # ----------------------------------------------------------
+    checkpoint, metrics = run_training_pipeline(
+    train_file=train_file,
+        unlabeled_file=unlabeled_file,
+        weight_dir=experiment.get_weight_dir("initial", 0),
+        evaluation_dir=experiment.get_evaluation_dir("initial", 0),
+        inference_dir=experiment.get_inference_dir("initial", 0),
+        args=args,
+    )
 
-    if args.cuda:
-        train_cmd.extend(["--cuda", str(True)])
+    # ----------------------------------------------------------
+    # Save AL History
+    # ----------------------------------------------------------
+    experiment.append_history(
+        experiment.al_history,
+        {
+            "method": "initial",
+            "round": 0,
+            "labeled": len(train),
+            "unlabeled": len(unlabeled),
+            "mAP": metrics["mAP"],
+        },
+    )
 
-    subprocess.run(train_cmd, check=True)
-
-    # Inference (labeled)
-    print("\nExtracting labeled contextual features...\n")
-    subprocess.run([
-        "python", "inference.py",
-        "--checkpoint", str(experiment.get_weight_dir("initial", 0) / "checkpoint_best.pth"),
-        "--dataset_root", args.dataset_root,
-        "--split-file", str(train_file),
-        "--output-dir", str(experiment.get_inference_dir("initial", 0) / "labeled"),
-        "--cuda", str(True)
-    ], check=True)
-
-    # Inference (unlabeled)
-    print("\nExtracting unlabeled contextual features...\n")
-    subprocess.run([
-        "python", "inference.py",
-        "--checkpoint", str(experiment.get_weight_dir("initial", 0) / "checkpoint_best.pth"),
-        "--dataset_root", args.dataset_root,
-        "--split-file", str(unlabeled_file),
-        "--output-dir", str(experiment.get_inference_dir("initial", 0) / "unlabeled"),
-        "--cuda", str(True)
-    ], check=True)
-
-    # create Round-01 directories
-    experiment.create_method_round("random", 1)
-    experiment.create_method_round("cdal", 1)
+    experiment.append_history(
+        experiment.per_class_ap,
+            {
+            "method": "initial",
+            "round": 0,
+            **metrics["aps"]
+        },
+    )
 
     # Random acquisition
     print("\nRunning Random acquisition...\n")
@@ -146,6 +138,8 @@ def main():
         seed=args.seed,
     )
 
+    experiment.create_method_round("random", 1)
+    
     update_splits(
         selected_indices=random_indices,
         unlabeled_records=unlabeled,
@@ -176,6 +170,8 @@ def main():
         seed=args.seed,
     )
 
+    experiment.create_method_round("cdal", 1)
+    
     update_splits(
         selected_indices=cdal_indices,
         unlabeled_records=unlabeled,
@@ -191,6 +187,7 @@ def main():
     print("=" * 60)
     print(f"Initial labeled images : {len(train)}")
     print(f"Initial unlabeled      : {len(unlabeled)}")
+    print(f"Round-00 mAP           : {metrics['mAP']:.4f}")
     print(f"Random selected        : {len(random_indices)}")
     print(f"CDAL selected          : {len(cdal_indices)}")
     print("=" * 60)

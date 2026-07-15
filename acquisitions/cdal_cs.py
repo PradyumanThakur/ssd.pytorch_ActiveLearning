@@ -132,15 +132,21 @@ def update_splits(selected_indices, unlabeled_records,
         os.makedirs(current_round_split_dir, exist_ok=True)
 
         with open(os.path.join(current_round_split_dir, "selected.txt"), "w") as f:
-            for dataset, image_id in selected_records:
+            for record in selected_records:
+                dataset = record.dataset
+                image_id = record.image_id
                 f.write(f"{dataset} {image_id}\n")
 
     with open(os.path.join(next_round_split_dir, "train.txt"), "w") as f:
-        for dataset, image_id in new_labeled:
+        for record in new_labeled:
+            dataset = record.dataset
+            image_id = record.image_id
             f.write(f"{dataset} {image_id}\n")
     
     with open(os.path.join(next_round_split_dir, "unlabeled.txt"), "w") as f:
-        for dataset, image_id in new_unlabeled:
+        for record in new_unlabeled:
+            dataset = record.dataset
+            image_id = record.image_id
             f.write(f"{dataset} {image_id}\n")
 
 

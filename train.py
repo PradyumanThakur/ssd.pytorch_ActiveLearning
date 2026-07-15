@@ -93,6 +93,24 @@ weights_dir = save_dir
 weights_dir.mkdir(parents=True, exist_ok=True)
 
 
+def should_validate(epoch_num, total_epochs):
+    """Epoch-based validation schedule (epoch_num is 1-indexed):
+
+        1   - 150 : never
+        151 - 159 : never (gap before the first explicit checkpoint)
+        160 - 239 : every 10 epochs, starting at 160
+        240 - end : every 5 epochs, starting at 240
+        final epoch (== total_epochs): always, regardless of the above
+    """
+    if epoch_num >= total_epochs:
+        return True
+    if epoch_num < 160:
+        return False
+    if epoch_num < 240:
+        return (epoch_num - 160) % 10 == 0
+    return (epoch_num - 240) % 5 == 0
+
+
 def train():
     if args.dataset == 'COCO':
         if args.dataset_root == VOC_ROOT:
@@ -243,7 +261,7 @@ def train():
         aps = None
         is_best = False
 
-        if (epoch + 1) % 1 == 0:
+        if should_validate(epoch + 1, args.epochs):
             metrics = evaluate_model(
                 net=net,
                 dataset_root=args.dataset_root,
