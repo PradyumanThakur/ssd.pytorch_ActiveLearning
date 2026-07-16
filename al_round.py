@@ -95,7 +95,7 @@ def main():
     # ----------------------------------------------------------
     # Save AL history
     # ----------------------------------------------------------
-    experiment.append_history(
+    experiment.update_history(
         experiment.al_history,
         {
             "method": args.method,
@@ -106,7 +106,7 @@ def main():
         },
     )
 
-    experiment.append_history(
+    experiment.update_history(
         experiment.per_class_ap,
             {
             "method": args.method,
@@ -137,45 +137,89 @@ def main():
     )
 
     # ----------------------------------------------------------
-    # Acquisition
+    # Resume support
     # ----------------------------------------------------------
-    print(f"\nRunning {args.method.upper()} acquisition...\n")
-
-    if args.method == "random":
-        selected_indices = random_select(
-            unlabeled_records=unlabeled,
-            budget=args.acquisition_budget,
-            seed=args.seed,
+    selected_file = (
+        experiment.get_selected_dir(
+            args.method,
+            current_round,
         )
-    elif args.method == "cdal":
-        selected_indices = cdal_coreset_select(
-            unlabeled_features=unlabeled_features,
-            labeled_features=labeled_features,
-            budget=args.acquisition_budget,
-            num_classes=20,
-            seed=args.seed,
-        )
-    else:
-        raise ValueError(f"Unknown acquisition method : {args.method}")
+        / "selected.txt"
+    )
 
-    # ----------------------------------------------------------
-    # Update splits
-    # ----------------------------------------------------------
-    update_splits(
-        selected_indices=selected_indices,
-        unlabeled_records=unlabeled,
-        labeled_records=train,
-        next_round_split_dir=experiment.get_split_dir(
+    next_train_file = (
+        experiment.get_split_dir(
             args.method,
             next_round,
-        ),
-        current_round_split_dir=(
-            experiment.get_selected_dir(
-                args.method,
-                current_round,
-            )
-        ),
+        )
+        / "train.txt"
     )
+
+    next_unlabeled_file = (
+        experiment.get_split_dir(
+            args.method,
+            next_round,
+        )
+        / "unlabeled.txt"
+    )
+
+    if (selected_file.exists() and next_train_file.exists() and next_unlabeled_file.exists()):
+        print("\n" + "=" * 70)
+        print("Acquisition already completed. Skipping...")
+        print("=" * 70)
+
+        print(f"Selected file : {selected_file}")
+        print(f"Train split   : {next_train_file}")
+        print(f"Unlabeled     : {next_unlabeled_file}")
+
+    else:
+        # ----------------------------------------------------------
+        # Acquisition
+        # ----------------------------------------------------------
+        print(f"\nRunning {args.method.upper()} acquisition...\n")
+
+        if args.method == "random":
+            selected_indices = random_select(
+                unlabeled_records=unlabeled,
+                budget=args.acquisition_budget,
+                seed=args.seed,
+            )
+        elif args.method == "cdal":
+            selected_indices = cdal_coreset_select(
+                unlabeled_features=unlabeled_features,
+                labeled_features=labeled_features,
+                budget=args.acquisition_budget,
+                num_classes=20,
+                seed=args.seed,
+            )
+        else:
+            raise ValueError(f"Unknown acquisition method : {args.method}")
+
+        # ----------------------------------------------------------
+        # Update splits
+        # ----------------------------------------------------------
+        update_splits(
+            selected_indices=selected_indices,
+            unlabeled_records=unlabeled,
+            labeled_records=train,
+            next_round_split_dir=experiment.get_split_dir(
+                args.method,
+                next_round,
+            ),
+            current_round_split_dir=(
+                experiment.get_selected_dir(
+                    args.method,
+                    current_round,
+                )
+            ),
+        )
+    
+    if selected_file.exists():
+        with open(selected_file, "r") as f:
+            acquired = sum(1 for _ in f)
+    else:
+        acquired = len(selected_indices)
+
 
     # ----------------------------------------------------------
     # Summary
@@ -187,7 +231,7 @@ def main():
 
     print(f"Labeled Images      : {len(train)}")
     print(f"Unlabeled Images    : {len(unlabeled)}")
-    print(f"Acquired Images     : {len(selected_indices)}")
+    print(f"  Acquired Images    : {acquired}")
     print(f"Current mAP         : {metrics['mAP']:.4f}")
 
     print("\nNext Round")

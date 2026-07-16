@@ -76,10 +76,10 @@ loader = data.DataLoader(
     dataset,
     batch_size=args.batch_size,
     shuffle=False,
-    num_workers=args.workers,
+    num_workers=args.num_workers,
     collate_fn=inference_collate,
     pin_memory=True,
-    persistent_workers=args.workers > 0,
+    persistent_workers=args.num_workers > 0,
 )
 
 print("=" * 60)
