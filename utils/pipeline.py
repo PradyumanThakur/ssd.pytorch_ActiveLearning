@@ -5,6 +5,9 @@ from pathlib import Path
 import torch
 import pandas as pd
 
+from ssd import build_ssd
+from data.config import voc
+
 from eval import evaluate_model
 
 
@@ -72,11 +75,28 @@ def evaluate_round(checkpoint, dataset_root, evaluation_dir, device):
     evaluation_dir = Path(evaluation_dir)
     evaluation_dir.mkdir(parents=True, exist_ok=True)
 
+    checkpoint = Path(checkpoint)
+
+    # Build SSD model (same architecture used during training)
+    model = build_ssd(phase="train", size=300, num_classes=voc["num_classes"])
+
+    # Load checkpoint
+    ckpt = torch.load(checkpoint, map_location=device)
+
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        model.load_state_dict(ckpt["model"])
+    else:
+        model.load_state_dict(ckpt)
+
+    model.to(device)
+    model.eval()
+
+    # Evaluate
     metrics = evaluate_model(
-        net=checkpoint, 
+        net=model,
         dataset_root=dataset_root,
         device=device,
-        save_dir=evaluation_dir
+        save_dir=evaluation_dir,
     )
 
     return metrics
@@ -197,3 +217,4 @@ def run_training_pipeline(train_file, unlabeled_file, weight_dir, evaluation_dir
     print("=" * 70)
 
     return checkpoint, metrics
+

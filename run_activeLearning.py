@@ -117,8 +117,8 @@ def main():
                 "--cuda", str(args.cuda),
         ]
 
-        if round_no == start_round and start_round > 0:
-            resume_ckpt = Path("experiments") / args.experiment_name / args.method / f"round_{round_no:02d}" / "checkpoints" / "checkpoint_latest.pth"
+        if round_no == start_round and args.start_round > 0:
+            resume_ckpt = Path("experiments") / args.experiment_name / args.method / f"round_{round_no:02d}" / "checkpoints" / "checkpoint_last.pth"
 
             if resume_ckpt.exists():
                 print(f"Resuming training from {resume_ckpt}")
@@ -128,7 +128,7 @@ def main():
                     f"Checkpoint not found: {resume_ckpt}"
                 )
             
-            subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)
 
     print("\n")
     print("=" * 70)

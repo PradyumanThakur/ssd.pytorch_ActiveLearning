@@ -31,7 +31,11 @@ class SSD(nn.Module):
         self.num_classes = num_classes
         self.cfg = (coco, voc)[num_classes == 21]
         self.priorbox = PriorBox(self.cfg)
-        self.priors = Variable(self.priorbox.forward(), volatile=True)
+        # self.priors = Variable(self.priorbox.forward(), volatile=True)
+        with torch.no_grad():
+            priors = self.priorbox.forward()
+
+        self.register_buffer("priors", priors, persistent=False)
         self.size = size
 
         # SSD network
@@ -100,7 +104,8 @@ class SSD(nn.Module):
                 loc.view(loc.size(0), -1, 4),                   # loc preds
                 self.softmax(conf.view(conf.size(0), -1,
                              self.num_classes)),                # conf preds
-                self.priors.type(type(x.data))                  # default boxes
+                # self.priors.type(type(x.data))                  # default boxes
+                self.priors
             )
         else:
             output = (
