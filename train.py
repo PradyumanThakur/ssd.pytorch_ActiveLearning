@@ -328,19 +328,29 @@ def adjust_learning_rate(optmizer, epoch):
 
     return lr
 
-history = []
 def log_epoch(epoch, lr, loc_loss, conf_loss, aps, mAP):
-    history.append({
+    history_csv = save_dir / "epoch_history.csv"
+
+    row = pd.DataFrame([{
         "epoch": epoch,
         "lr": lr,
         "loc_loss": loc_loss,
         "conf_loss": conf_loss,
         "total_loss": loc_loss + conf_loss,
         "mAP": mAP,
-        **aps
-    })
+        **aps,
+    }])
 
-    pd.DataFrame(history).to_csv(save_dir / "epoch_history.csv", index=False)
+    if history_csv.exists():
+        history = pd.read_csv(history_csv)
+        history = history[history["epoch"] != epoch]
+        history = pd.concat([history, row], ignore_index=True)
+    else:
+        history = row
+    
+    history = history.sort_values("epoch").reset_index(drop=True)
+
+    history.to_csv(history_csv, index=False)
 
 def save_checkpoint(model, optimizer, epoch, save_dir, 
                     best=False, best_mAP=None, filename="checkpoint_latest.pth"):

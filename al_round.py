@@ -95,7 +95,7 @@ def main():
     # ----------------------------------------------------------
     # Save AL history
     # ----------------------------------------------------------
-    experiment.append_history(
+    experiment.update_history(
         experiment.al_history,
         {
             "method": args.method,
@@ -106,7 +106,7 @@ def main():
         },
     )
 
-    experiment.append_history(
+    experiment.update_history(
         experiment.per_class_ap,
             {
             "method": args.method,

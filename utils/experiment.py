@@ -45,13 +45,25 @@ class ExperimentManager:
         with open(path, "w") as f:
             yaml.dump(config, f, default_flow_style=False)
         
-    def append_history(self, csv_path, row):
+    def update_history(self, csv_path, row):
         df = pd.DataFrame([row])
-
-        if os.path.exists(csv_path):
-            df.to_csv(csv_path, mode="a", index=False, header=False)
-        else:
+        if not os.path.exists(csv_path):
             df.to_csv(csv_path, index=False)
+            return
+
+        history = pd.read_csv(csv_path)
+
+        mask = (
+            (history["method"] == row["method"]) &
+            (history["round"] == row["round"])
+        )
+
+        if mask.any():
+            history.loc[mask, :] = row
+        else:
+            history = pd.concat([history, df], ignore_index=True)
+
+        history.to_csv(csv_path, index=False)
     
     def get_round_dir(self, method, round_id):
         if method == "initial":

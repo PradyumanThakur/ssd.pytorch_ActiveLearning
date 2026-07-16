@@ -109,7 +109,7 @@ def main():
     # ----------------------------------------------------------
     # Save AL History
     # ----------------------------------------------------------
-    experiment.append_history(
+    experiment.update_history(
         experiment.al_history,
         {
             "method": "initial",
@@ -120,7 +120,7 @@ def main():
         },
     )
 
-    experiment.append_history(
+    experiment.update_history(
         experiment.per_class_ap,
             {
             "method": "initial",
