@@ -1,2 +1,3 @@
 method,round,labeled,unlabeled,mAP
 cdal,1,2000,14551,0.6278303406096694
+cdal,2,3000,13551,0.6564980416618507
