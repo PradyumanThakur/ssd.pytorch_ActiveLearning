@@ -133,11 +133,7 @@ def main():
                     f"Checkpoint not found: {resume_ckpt}"
                 )
             
-<<<<<<< HEAD
-        subprocess.run(cmd, check=True)
-=======
             subprocess.run(cmd, check=True)
->>>>>>> ffa624dece63393d108cbdf968d44e947bc862c6
 
     print("\n")
     print("=" * 70)

@@ -225,6 +225,7 @@ def run_training_pipeline(train_file, unlabeled_file, weight_dir, evaluation_dir
 
     return checkpoint, metrics
 
+<<<<<<< HEAD
 def metrics_exist(evaluation_dir):
     return (Path(evaluation_dir) / "metrics.json").exists()
 
@@ -250,3 +251,5 @@ def features_exist(split_file, output_dir):
                 return False
 
     return True
+=======
+>>>>>>> a4ec4be01f388dfc8cfcea918b80b13de95b61a8
