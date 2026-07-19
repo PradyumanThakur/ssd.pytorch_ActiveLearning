@@ -6,3 +6,4 @@
 # Ignore dataset directories (replace 'dataset_folder/' with your actual folder name)
 *.zip
 *.tar.gz*.pth
+*.pyc
