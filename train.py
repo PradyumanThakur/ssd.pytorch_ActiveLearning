@@ -75,6 +75,11 @@ device = torch.device(
 
 print("Using device:", device)
 
+####################################
+clip_grad_norm = 10.0
+max_consecutive_bad_batches = 50
+####################################
+
 if torch.cuda.is_available():
     if args.cuda:
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
@@ -215,6 +220,11 @@ def train():
         epoch_conf_loss = 0.0
         epoch_total_loss = 0.0
 
+        #########################################
+        num_good_batches = 0
+        consecutive_bad_batches = 0
+        #########################################
+
         if args.visdom:
             vis_title = 'SSD.PyTorch on ' + dataset.name
             vis_legend = ['Loc Loss', 'Conf Loss', 'Total Loss']
@@ -222,7 +232,7 @@ def train():
             epoch_plot = create_vis_plot('Epoch', 'Loss', vis_title, vis_legend)
 
         pbar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{args.epochs}]", leave=True)
-        for images, targets in pbar:
+        for batch_idx, (images, targets) in enumerate(pbar):
             images = images.to(device, non_blocking=True)
             targets = [ann.to(device, non_blocking=True) for ann in targets]
 
@@ -232,20 +242,82 @@ def train():
             optimizer.zero_grad()
             loss_l, loss_c = criterion(out, targets)
             loss = loss_l + loss_c
+
+            ######################################################################################
+            # --- NaN/Inf guard: never let a bad batch corrupt the weights ---
+            if not torch.isfinite(loss):
+                consecutive_bad_batches += 1
+                tqdm.write(
+                    f"[WARN] Non-finite loss at epoch {epoch+1}, batch {batch_idx} "
+                    f"(loc={loss_l.item()}, conf={loss_c.item()}). Skipping batch "
+                    f"({consecutive_bad_batches} bad in a row)."
+                )
+                if consecutive_bad_batches >= max_consecutive_bad_batches:
+                    raise RuntimeError(
+                        f"Aborting: {consecutive_bad_batches} consecutive non-finite "
+                        f"batches at epoch {epoch+1}. This usually means the LR is too "
+                        f"high, or some batches have zero matched anchors (check your "
+                        f"MultiBoxLoss N==0 handling and your annotations)."
+                    )
+                continue
+            
+            #################################################################################
             loss.backward()
+
+            ###############################################################################
+            # --- clip gradients so one spiky batch can't blow up the weights ---
+            if clip_grad_norm > 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    net.parameters(), max_norm=clip_grad_norm
+                )
+            else:
+                grad_norm = None
+            
+            # --- belt-and-suspenders: verify gradients are finite before stepping ---
+            grads_finite = all(
+                torch.isfinite(p.grad).all()
+                for p in net.parameters()
+                if p.grad is not None
+            )
+            if not grads_finite:
+                consecutive_bad_batches += 1
+                tqdm.write(
+                    f"[WARN] Non-finite gradients at epoch {epoch+1}, batch {batch_idx}. "
+                    f"Skipping optimizer step ({consecutive_bad_batches} bad in a row)."
+                )
+                optimizer.zero_grad()
+                if consecutive_bad_batches >= max_consecutive_bad_batches:
+                    raise RuntimeError(
+                        f"Aborting: {consecutive_bad_batches} consecutive non-finite "
+                        f"gradient batches at epoch {epoch+1}."
+                    )
+                continue
+            
+            ###################################################################################
+
             optimizer.step()
+            
+            #######################################
+            consecutive_bad_batches = 0
+            num_good_batches += 1
+            #######################################
             epoch_loc_loss += loss_l.item()
             epoch_conf_loss += loss_c.item()
             epoch_total_loss += loss.item()
 
-            pbar.set_postfix(
+            postfix = dict(
                 loss=f"{loss.item():.3f}",
                 loc=f"{loss_l.item():.3f}",
                 conf=f"{loss_c.item():.3f}",
                 lr=f"{optimizer.param_groups[0]['lr']:.1e}"
             )
-        
-        num_batches = len(train_loader)
+            if grad_norm is not None:
+                postfix["gnorm"] = f"{float(grad_norm):.2f}"
+            pbar.set_postfix(**postfix)
+
+    
+        # num_batches = len(train_loader)
+        num_batches = max(num_good_batches, 1)
         epoch_loc_loss /= num_batches
         epoch_conf_loss /= num_batches
         epoch_total_loss /= num_batches
@@ -256,7 +328,9 @@ def train():
             f"Loc {epoch_loc_loss:.4f} | "
             f"Conf {epoch_conf_loss:.4f} | "
             f"Total {epoch_total_loss:.4f}"
+            f"Good batches {num_good_batches}/{len(train_loader)}"
         )
+
         mAP = None
         aps = None
         is_best = False
