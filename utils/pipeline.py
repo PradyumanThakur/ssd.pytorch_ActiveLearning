@@ -49,7 +49,8 @@ def train_model(train_file, weight_dir, args):
         "--lr", str(args.lr),
         "--save-dir", str(weight_dir),
         "--save-freq", str(args.save_freq),
-        "--experiment-name", args.experiment_name
+        "--experiment-name", args.experiment_name,
+        "--seed", args.seed
     ]
 
     if args.resume is not None:
