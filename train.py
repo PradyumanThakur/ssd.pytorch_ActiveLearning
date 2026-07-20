@@ -17,12 +17,25 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 import shutil
+import random
 
 from eval import evaluate_model
 
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # Reproducibility
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 parser = argparse.ArgumentParser(
@@ -66,8 +79,11 @@ parser.add_argument("--save-dir", default="checkpoints", type=str,
 parser.add_argument("--experiment-name", default=None, type=str)
 parser.add_argument("--save-freq", type=int, default=9999, 
                     help="Save checkpoint every N epochs")
+parser.add_argument("--seed", type=int, default=42)
 
 args = parser.parse_args()
+
+set_seed(args.seed)
 
 device = torch.device(
     "cuda" if torch.cuda.is_available() and args.cuda else "cpu"
